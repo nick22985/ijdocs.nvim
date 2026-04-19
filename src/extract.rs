@@ -1062,8 +1062,23 @@ fn tidy_markdown(md: &str) -> String {
     let md = md.replace('\u{200b}', "").replace('\u{00a0}', " ");
     let mut out = String::with_capacity(md.len());
     let mut blank_run = 0;
+    let mut in_code_block = false;
     for line in md.lines() {
-        let trimmed = line.trim_end();
+        let trimmed_end = line.trim_end();
+        if trimmed_end.starts_with("```") {
+            in_code_block = !in_code_block;
+            out.push_str(trimmed_end);
+            out.push('\n');
+            blank_run = 0;
+            continue;
+        }
+        if in_code_block {
+            out.push_str(trimmed_end);
+            out.push('\n');
+            blank_run = 0;
+            continue;
+        }
+        let trimmed = trimmed_end;
         let check = trimmed.trim_start_matches("* ");
         if check.starts_with("###") && check.ends_with("###") {
             continue;

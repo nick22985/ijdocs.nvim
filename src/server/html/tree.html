@@ -169,7 +169,8 @@ body {
     border-radius: 3px;
     font-size: 12px;
 }
-#doc-frame pre code { background: none; padding: 0; }
+#doc-frame pre code { background: none; padding: 0; color: inherit; }
+#doc-frame pre code.hljs { background: none; padding: 0; }
 #doc-frame h1, #doc-frame h2, #doc-frame h3, #doc-frame h4 {
     color: var(--mauve);
     margin: 16px 0 8px;
@@ -197,6 +198,11 @@ body {
 }
 #resize-handle:hover { background: var(--blue); opacity: 0.3; }
 </style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/monokai-sublime.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/java.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/xml.min.js"></script>
 </head>
 <body>
 
@@ -377,22 +383,36 @@ async function togglePkg(art, pkg, pkgEl) {
 }
 
 function mdToHtml(md, typeRefs) {
-    let html = md;
+    const codeBlocks = [];
+    let html = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        const idx = codeBlocks.length;
+        const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const cls = lang ? ` class="language-${lang}"` : '';
+        codeBlocks.push(`<pre><code${cls}>${escaped.replace(/^\n+|\n+$/g, '')}</code></pre>`);
+        return `\x00CODEBLOCK${idx}\x00`;
+    });
     html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
     html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-        return `<pre><code>${code.trim()}</code></pre>`;
-    });
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
     html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
     html = html.replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
-    html = html.replace(/^(?!<[huplo])((?!<\/?\w).+)$/gm, '<p>$1</p>');
-    html = html.replace(/<p><\/p>/g, '');
+    html = html.replace(/\n{2,}/g, '\n</p><p>\n');
+    html = '<p>' + html + '</p>';
+    html = html.replace(/<p>\s*<\/p>/g, '');
+    html = html.replace(/<p>\s*(<h[1-4]>)/g, '$1');
+    html = html.replace(/(<\/h[1-4]>)\s*<\/p>/g, '$1');
+    html = html.replace(/<p>\s*(<ul>)/g, '$1');
+    html = html.replace(/(<\/ul>)\s*<\/p>/g, '$1');
+    html = html.replace(/<p>\s*\x00CODEBLOCK/g, '\x00CODEBLOCK');
+    html = html.replace(/\x00CODEBLOCK(\d+)\x00\s*<\/p>/g, '\x00CODEBLOCK$1\x00');
+    for (let i = 0; i < codeBlocks.length; i++) {
+        html = html.replace(`\x00CODEBLOCK${i}\x00`, codeBlocks[i]);
+    }
     if (typeRefs) {
         for (const [name, fqn] of Object.entries(typeRefs)) {
             if (name.startsWith('@')) continue;
@@ -434,6 +454,7 @@ async function loadClass(fqn) {
             btnBrowser.classList.add('hidden');
         }
         docFrame.innerHTML = mdToHtml(data.markdown, data.type_refs);
+        docFrame.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
         docFrame.querySelectorAll('.type-ref').forEach(el => {
             el.addEventListener('click', () => loadClass(el.dataset.fqn));
         });
