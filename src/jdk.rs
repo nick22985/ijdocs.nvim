@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub struct JdkSrc {
     path: PathBuf,
     packages: HashMap<String, String>,
+    exported_packages: std::collections::HashSet<String>,
     pub java_version: Option<String>,
     classes: Vec<(String, String)>,
 }
@@ -76,6 +77,34 @@ impl JdkSrc {
             }
         }
 
+        let mut exported_packages = std::collections::HashSet::new();
+        for i in 0..zip.len() {
+            let mut entry = match zip.by_index(i) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.name().ends_with("/module-info.java") {
+                continue;
+            }
+            let mut src = String::new();
+            if entry.read_to_string(&mut src).is_ok() {
+                for line in src.lines() {
+                    let trimmed = line.trim().trim_end_matches(';');
+                    if let Some(rest) = trimmed.strip_prefix("exports ") {
+                        let pkg = rest.split_whitespace().next().unwrap_or("");
+                        if !pkg.is_empty() && !rest.contains(" to ") {
+                            exported_packages.insert(pkg.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        for pkg in packages.keys() {
+            if pkg.starts_with("java.") || pkg.starts_with("javax.") {
+                exported_packages.insert(pkg.clone());
+            }
+        }
+
         classes.sort_by(|a, b| a.1.cmp(&b.1));
 
         tracing::info!(
@@ -102,6 +131,7 @@ impl JdkSrc {
         Some(Self {
             path,
             packages,
+            exported_packages,
             java_version,
             classes,
         })
@@ -161,6 +191,9 @@ impl JdkSrc {
         for split in (1..parts.len()).rev() {
             let pkg = parts[..split].join(".");
             if let Some(module) = self.packages.get(&pkg) {
+                if !self.exported_packages.contains(&pkg) {
+                    return None;
+                }
                 let class_path = parts[split..].join("/");
                 let ver = self.java_version.as_deref().unwrap_or("21");
                 return Some(format!(

@@ -54,6 +54,7 @@ pub async fn md(
                 if let Some(source) = jdk.read_source(&fqn) {
                     let result =
                         extract::source_to_markdown(&source, q.member.as_deref());
+                    let has_html = jdk.docs_url(&fqn).is_some();
                     return Json(MdResponse {
                         markdown: result.markdown,
                         artifact: "jdk".to_string(),
@@ -61,7 +62,7 @@ pub async fn md(
                         fqn,
                         type_refs: result.type_refs,
                         annotations: None,
-                        has_html: false,
+                        has_html,
                     })
                     .into_response();
                 }
