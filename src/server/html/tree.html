@@ -222,13 +222,21 @@ let treeData = [];
 let currentFqn = null;
 let currentData = null;
 
+let skipPush = false;
+
 function updateURL() {
     const params = new URLSearchParams();
     const q = document.getElementById('search-box').value.trim();
     if (q) params.set('q', q);
     if (currentFqn) params.set('class', currentFqn);
     const str = params.toString();
-    history.replaceState(null, '', str ? '?' + str : window.location.pathname);
+    const url = str ? '?' + str : window.location.pathname;
+    if (skipPush) {
+        skipPush = false;
+        history.replaceState(null, '', url);
+    } else {
+        history.pushState(null, '', url);
+    }
 }
 
 function loadFromURL() {
@@ -240,6 +248,26 @@ function loadFromURL() {
     }
     return { q, cls };
 }
+
+window.addEventListener('popstate', () => {
+    skipPush = true;
+    const { q, cls } = loadFromURL();
+    if (cls) {
+        loadClass(cls);
+    } else if (q) {
+        doSearch(q);
+    } else {
+        currentFqn = null;
+        currentData = null;
+        document.getElementById('search-box').value = '';
+        document.getElementById('breadcrumb').innerHTML = '';
+        document.getElementById('doc-frame').className = 'empty-state';
+        document.getElementById('doc-frame').innerHTML = 'Click a class to view its documentation';
+        document.getElementById('btn-browser').classList.add('hidden');
+        searchMode = false;
+        renderTree('');
+    }
+});
 
 async function fetchJSON(url) {
     const r = await fetch(url);

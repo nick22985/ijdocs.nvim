@@ -87,6 +87,16 @@ fn extract_type_refs(html: &str, base_pkg: Option<&str>) -> HashMap<String, Stri
     refs
 }
 
+fn strip_version_prefix(s: &str) -> &str {
+    if let Some(slash) = s.find('/') {
+        let prefix = &s[..slash];
+        if prefix.contains('.') && prefix.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            return &s[slash + 1..];
+        }
+    }
+    s
+}
+
 fn href_to_fqn(href: &str, base_pkg: Option<&str>) -> Option<String> {
     if href.starts_with("http://") || href.starts_with("https://") {
         if let Some(rest) = href
@@ -94,6 +104,7 @@ fn href_to_fqn(href: &str, base_pkg: Option<&str>) -> Option<String> {
             .map(|i| &href[i + 5..])
             .or_else(|| href.find("/docs/api/").map(|i| &href[i + 10..]))
         {
+            let rest = strip_version_prefix(rest);
             let path = rest.split(['?', '#']).next()?;
             let path = path.strip_suffix(".html")?;
             return Some(path.replace('/', "."));

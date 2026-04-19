@@ -461,6 +461,24 @@ local function open_float(data)
 		if d.file_path then
 			close_float()
 			vim.cmd("edit " .. vim.fn.fnameescape(d.file_path))
+			local class_name = d.fqn:match("%.([^%.]+)$") or d.fqn
+			local patterns = {
+				"class%s+" .. vim.pesc(class_name),
+				"interface%s+" .. vim.pesc(class_name),
+				"enum%s+" .. vim.pesc(class_name),
+				"record%s+" .. vim.pesc(class_name),
+				"@interface%s+" .. vim.pesc(class_name),
+			}
+			local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+			for i, line in ipairs(lines) do
+				for _, pat in ipairs(patterns) do
+					if line:match(pat) then
+						vim.api.nvim_win_set_cursor(0, { i, 0 })
+						vim.cmd("normal! zz")
+						return
+					end
+				end
+			end
 			return
 		end
 		local word = vim.fn.expand("<cword>")

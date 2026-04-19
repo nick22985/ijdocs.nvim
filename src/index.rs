@@ -13,6 +13,7 @@ pub struct JarEntry {
     pub packages: Vec<String>,
     pub classes_jar: Option<PathBuf>,
     pub is_sources: bool,
+    pub module_prefix: Option<String>,
 }
 
 pub struct Index {
@@ -53,7 +54,7 @@ impl Index {
                 }
                 if name.ends_with("-javadoc.jar") {
                     match read_packages(path) {
-                        Ok(packages) => {
+                        Ok((packages, module_prefix)) => {
                             let artifact_id = artifact_id_from_filename(name);
                             let maven_coord = maven_coord_from_path(path);
                             let classes_jar = find_classes_jar(path);
@@ -68,6 +69,7 @@ impl Index {
                                 packages,
                                 classes_jar,
                                 is_sources: false,
+                                module_prefix,
                             });
                         }
                         Err(e) => tracing::warn!(?path, error=%e, "failed to read jar"),
@@ -107,6 +109,7 @@ impl Index {
                         packages,
                         classes_jar,
                         is_sources: true,
+                        module_prefix: None,
                     });
                 }
                 Ok(_) => {}
@@ -138,6 +141,7 @@ impl Index {
                         packages,
                         classes_jar: Some(path),
                         is_sources: false,
+                        module_prefix: None,
                     });
                 }
                 Ok(_) => {}
@@ -162,7 +166,7 @@ impl Index {
             } else if is_classes_only {
                 scan_bytecode_classes(&jar.path).unwrap_or_default()
             } else {
-                scan_all_classes(&jar.path).unwrap_or_default()
+                scan_all_classes(&jar.path, jar.module_prefix.as_deref()).unwrap_or_default()
             };
             for (pkg, class_name) in classes {
                 let fqn = format!("{pkg}.{class_name}");
@@ -216,6 +220,11 @@ impl Index {
                 let try_jar = |idx: usize| -> Option<(usize, String)> {
                     let jar = &self.jars[idx];
                     let is_classes_only = jar.classes_jar.as_ref() == Some(&jar.path);
+                    let mp = jar
+                        .module_prefix
+                        .as_deref()
+                        .map(|p| format!("{p}/"))
+                        .unwrap_or_default();
                     let candidates: Vec<String> = if jar.is_sources {
                         let mut c = vec![format!("{}/{}.java", pkg_path, class_parts[0])];
                         if class_parts.len() > 1 {
@@ -234,9 +243,10 @@ impl Index {
                         }
                         c
                     } else {
-                        let mut c = vec![format!("{}/{}.html", pkg_path, class_parts.join("/"))];
+                        let mut c =
+                            vec![format!("{mp}{}/{}.html", pkg_path, class_parts.join("/"))];
                         if class_parts.len() > 1 {
-                            c.push(format!("{}/{}.html", pkg_path, class_parts.join(".")));
+                            c.push(format!("{mp}{}/{}.html", pkg_path, class_parts.join(".")));
                         }
                         c
                     };
@@ -362,7 +372,12 @@ impl Index {
             Some(j) => j,
             None => return Vec::new(),
         };
-        let prefix = format!("{}/", package.replace('.', "/"));
+        let mp = jar
+            .module_prefix
+            .as_deref()
+            .map(|p| format!("{p}/"))
+            .unwrap_or_default();
+        let prefix = format!("{mp}{}/", package.replace('.', "/"));
         let file = match File::open(&jar.path) {
             Ok(f) => f,
             Err(_) => return Vec::new(),
@@ -451,25 +466,68 @@ fn maven_coord_from_path(path: &Path) -> Option<String> {
     Some(format!("{group}:{artifact}:{version}"))
 }
 
-fn read_packages(path: &Path) -> Result<Vec<String>> {
+fn read_packages(path: &Path) -> Result<(Vec<String>, Option<String>)> {
     let file = File::open(path).with_context(|| format!("opening {path:?}"))?;
     let mut zip = zip::ZipArchive::new(file)?;
+    let module_prefix = detect_module_prefix(&mut zip);
     for candidate in ["element-list", "package-list"] {
-        if let Ok(mut f) = zip.by_name(candidate) {
-            let mut s = String::new();
-            f.read_to_string(&mut s)?;
-            return Ok(parse_element_list(&s));
+        let prefixed = if let Some(mp) = &module_prefix {
+            format!("{mp}/{candidate}")
+        } else {
+            candidate.to_string()
+        };
+        for name in [&prefixed, &candidate.to_string()] {
+            if let Ok(mut f) = zip.by_name(name) {
+                let mut s = String::new();
+                f.read_to_string(&mut s)?;
+                return Ok((parse_element_list(&s), module_prefix));
+            }
         }
     }
     let mut pkgs = Vec::new();
+    let prefix_str = module_prefix
+        .as_deref()
+        .map(|p| format!("{p}/"))
+        .unwrap_or_default();
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
         let n = entry.name();
         if let Some(stripped) = n.strip_suffix("/package-summary.html") {
+            let stripped = stripped.strip_prefix(&prefix_str).unwrap_or(stripped);
             pkgs.push(stripped.replace('/', "."));
         }
     }
-    Ok(pkgs)
+    Ok((pkgs, module_prefix))
+}
+
+fn detect_module_prefix(zip: &mut zip::ZipArchive<File>) -> Option<String> {
+    let skip = [
+        "META-INF",
+        "resources",
+        "script-dir",
+        "legal",
+        "src",
+        "jquery",
+    ];
+    for i in 0..zip.len() {
+        let entry = match zip.by_index(i) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let name = entry.name();
+        if !name.contains('/') {
+            continue;
+        }
+        let first_seg = name.split('/').next().unwrap_or("");
+        if skip.iter().any(|&s| first_seg.eq_ignore_ascii_case(s)) {
+            continue;
+        }
+        if first_seg.contains('.') && !first_seg.ends_with(".html") {
+            return Some(first_seg.to_string());
+        }
+        return None;
+    }
+    None
 }
 
 fn parse_element_list(s: &str) -> Vec<String> {
@@ -516,16 +574,25 @@ fn find_classes_jar(javadoc_jar: &Path) -> Option<PathBuf> {
     None
 }
 
-fn scan_all_classes(jar_path: &Path) -> Result<Vec<(String, String)>> {
+fn scan_all_classes(jar_path: &Path, module_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
     let file = File::open(jar_path)?;
     let mut zip = zip::ZipArchive::new(file)?;
+    let mp_prefix = module_prefix.map(|p| format!("{p}/")).unwrap_or_default();
     let mut classes = Vec::new();
     for i in 0..zip.len() {
         let entry = match zip.by_index(i) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        let name = entry.name().to_string();
+        let raw_name = entry.name().to_string();
+        let name = if !mp_prefix.is_empty() {
+            match raw_name.strip_prefix(&mp_prefix) {
+                Some(n) => n,
+                None => continue,
+            }
+        } else {
+            &raw_name
+        };
         if !name.ends_with(".html") || name.contains("class-use/") {
             continue;
         }
