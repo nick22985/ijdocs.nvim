@@ -22,6 +22,22 @@ local function set_keymaps(bufnr)
 			desc = "ijdocs: open javadoc in browser",
 		})
 	)
+	vim.keymap.set(
+		"n",
+		"<leader>jt",
+		ij.tree,
+		vim.tbl_extend("force", opts, {
+			desc = "ijdocs: toggle javadoc tree",
+		})
+	)
+	vim.keymap.set(
+		"n",
+		"<leader>jb",
+		ij.tree_browser,
+		vim.tbl_extend("force", opts, {
+			desc = "ijdocs: open tree in browser",
+		})
+	)
 end
 
 local bufnr = vim.api.nvim_get_current_buf()

@@ -343,6 +343,9 @@ pub fn source_to_markdown(source: &str, member: Option<&str>) -> MdResult {
     let mut in_comment = false;
     let mut comment_buf = String::new();
 
+    let mut imports: HashMap<String, String> = HashMap::new();
+    let mut package = String::new();
+
     for line in source.lines() {
         let trimmed = line.trim();
 
@@ -387,7 +390,18 @@ pub fn source_to_markdown(source: &str, member: Option<&str>) -> MdResult {
         if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("@") {
             continue;
         }
-        if trimmed.starts_with("package ") || trimmed.starts_with("import ") {
+        if let Some(rest) = trimmed.strip_prefix("package ") {
+            package = rest.trim_end_matches(';').trim().to_string();
+            current_doc = None;
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("import ") {
+            let imp = rest.trim_end_matches(';').trim();
+            if !imp.starts_with("static ") && !imp.ends_with('*') {
+                if let Some(short) = imp.rsplit('.').next() {
+                    imports.insert(short.to_string(), imp.to_string());
+                }
+            }
             current_doc = None;
             continue;
         }
@@ -398,7 +412,26 @@ pub fn source_to_markdown(source: &str, member: Option<&str>) -> MdResult {
             && !trimmed.starts_with("return")
             && class_sig.is_none()
         {
-            class_sig = Some(trimmed.trim_end_matches('{').trim().to_string());
+            let sig = trimmed.trim_end_matches('{').trim().to_string();
+            for keyword in ["class ", "interface ", "enum "] {
+                if let Some(pos) = sig.find(keyword) {
+                    let after = &sig[pos + keyword.len()..];
+                    let class_name = after
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if !class_name.is_empty() {
+                        let fqn = if package.is_empty() {
+                            class_name.to_string()
+                        } else {
+                            format!("{}.{}", package, class_name)
+                        };
+                        imports.insert(class_name.to_string(), fqn);
+                    }
+                    break;
+                }
+            }
+            class_sig = Some(sig);
             class_doc = current_doc.take();
             continue;
         }
@@ -431,12 +464,15 @@ pub fn source_to_markdown(source: &str, member: Option<&str>) -> MdResult {
         for (name, sig, doc) in &member_docs {
             if name == m {
                 let mut md = format!("{sig}\n\n");
+                let mut type_refs = HashMap::new();
                 if !doc.is_empty() {
-                    md.push_str(&javadoc_to_markdown(doc));
+                    let (doc_md, refs) = javadoc_to_markdown(doc, &imports, &package);
+                    md.push_str(&doc_md);
+                    type_refs = refs;
                 }
                 return MdResult {
                     markdown: md,
-                    type_refs: HashMap::new(),
+                    type_refs,
                 };
             }
         }
@@ -452,12 +488,15 @@ pub fn source_to_markdown(source: &str, member: Option<&str>) -> MdResult {
                     if let Some(info) = param_info {
                         md = format!("{info}\n\n{sig}\n\n");
                     }
+                    let mut type_refs = HashMap::new();
                     if !doc.is_empty() {
-                        md.push_str(&javadoc_to_markdown(doc));
+                        let (doc_md, refs) = javadoc_to_markdown(doc, &imports, &package);
+                        md.push_str(&doc_md);
+                        type_refs = refs;
                     }
                     return MdResult {
                         markdown: md,
-                        type_refs: HashMap::new(),
+                        type_refs,
                     };
                 }
             }
@@ -465,18 +504,21 @@ pub fn source_to_markdown(source: &str, member: Option<&str>) -> MdResult {
     }
 
     let mut md = String::new();
+    let mut type_refs = HashMap::new();
     if let Some(sig) = &class_sig {
         md.push_str(&format!("{sig}\n\n"));
     }
     if let Some(doc) = &class_doc {
-        md.push_str(&javadoc_to_markdown(doc));
+        let (doc_md, refs) = javadoc_to_markdown(doc, &imports, &package);
+        md.push_str(&doc_md);
+        type_refs = refs;
     } else {
         md.push_str("_(no javadoc found)_\n");
     }
 
     MdResult {
         markdown: md,
-        type_refs: HashMap::new(),
+        type_refs,
     }
 }
 
@@ -491,18 +533,222 @@ fn extract_param_type(params_str: &str, param_name: &str) -> Option<String> {
     None
 }
 
-fn clean_inline_tags(s: &str) -> String {
-    s.replace("{@code ", "`")
-        .replace("{@link ", "`")
-        .replace("{@linkplain ", "")
-        .replace("{@literal ", "")
-        .replace("{@value ", "`")
-        .replace("{@inheritDoc}", "")
-        .replace('}', "`")
+fn process_inline_tags(
+    doc: &str,
+    imports: &HashMap<String, String>,
+    package: &str,
+) -> (String, HashMap<String, String>) {
+    let mut type_refs = HashMap::new();
+    let mut result = String::with_capacity(doc.len());
+    let chars: Vec<char> = doc.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if i + 1 < chars.len() && chars[i] == '{' && chars[i + 1] == '@' {
+            i += 2;
+            let mut tag = String::new();
+            while i < chars.len() && !chars[i].is_whitespace() && chars[i] != '}' {
+                tag.push(chars[i]);
+                i += 1;
+            }
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
+            let mut content = String::new();
+            let mut depth = 1;
+            while i < chars.len() {
+                if chars[i] == '{' {
+                    depth += 1;
+                }
+                if chars[i] == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                content.push(chars[i]);
+                i += 1;
+            }
+            let content = content.split_whitespace().collect::<Vec<_>>().join(" ");
+
+            match tag.as_str() {
+                "code" => {
+                    result.push('`');
+                    result.push_str(content.trim());
+                    result.push('`');
+                }
+                "link" | "linkplain" => {
+                    let content = content.trim();
+                    let has_explicit_display = content.contains(' ');
+                    let (fqn_part, display) = parse_link_content(content);
+                    let resolved = if !fqn_part.is_empty() {
+                        resolve_link_fqn(&fqn_part, imports, package)
+                    } else {
+                        display.clone()
+                    };
+                    let render_text = if has_explicit_display {
+                        display
+                    } else {
+                        resolved.clone()
+                    };
+                    type_refs
+                        .entry(resolved.clone())
+                        .or_insert(resolved.clone());
+                    if has_explicit_display && render_text != resolved {
+                        type_refs
+                            .entry(render_text.clone())
+                            .or_insert(resolved.clone());
+                    }
+                    if tag == "link" {
+                        result.push('`');
+                        result.push_str(&render_text);
+                        result.push('`');
+                    } else {
+                        result.push_str(&render_text);
+                    }
+                }
+                "literal" => {
+                    result.push_str(content.trim());
+                }
+                "value" => {
+                    result.push('`');
+                    result.push_str(content.trim());
+                    result.push('`');
+                }
+                "inheritDoc" | "docRoot" => {}
+                _ => {
+                    result.push_str(&content);
+                }
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    (result, type_refs)
 }
 
-fn javadoc_to_markdown(doc: &str) -> String {
-    let mut out = String::new();
+fn parse_link_content(content: &str) -> (String, String) {
+    if let Some((fqn, display)) = content.split_once(' ') {
+        (fqn.trim().to_string(), display.trim().to_string())
+    } else if content.starts_with('#') {
+        (content.to_string(), content[1..].to_string())
+    } else if let Some(hash) = content.find('#') {
+        let class = &content[..hash];
+        let method = &content[hash + 1..];
+        (content.to_string(), format!("{class}.{method}"))
+    } else {
+        (content.to_string(), content.to_string())
+    }
+}
+
+fn resolve_link_fqn(raw: &str, imports: &HashMap<String, String>, package: &str) -> String {
+    let (class_part, _method) = if raw.starts_with('#') {
+        let _method = &raw[1..];
+        for (_, fqn) in imports.iter() {
+            if fqn.starts_with(package)
+                && fqn.len() > package.len()
+                && fqn[package.len()..].starts_with('.')
+                && !fqn[package.len() + 1..].contains('.')
+            {
+                return fqn.clone();
+            }
+        }
+        return raw.replace('#', ".");
+    } else if let Some(hash) = raw.find('#') {
+        (&raw[..hash], Some(&raw[hash + 1..]))
+    } else {
+        (raw, None)
+    };
+
+    if class_part.contains('.') {
+        let parts: Vec<&str> = class_part.split('.').collect();
+        if parts.len() >= 2 && parts[0].chars().next().map_or(false, |c| c.is_lowercase()) {
+            return class_part.to_string();
+        }
+    }
+
+    let base = class_part.split('.').next().unwrap_or(class_part);
+    if let Some(fqn) = imports.get(base) {
+        if class_part.contains('.') {
+            let rest = &class_part[base.len()..];
+            return format!("{fqn}{rest}");
+        }
+        return fqn.clone();
+    }
+
+    let java_lang_types = [
+        "Object",
+        "String",
+        "Class",
+        "System",
+        "Thread",
+        "Runnable",
+        "Integer",
+        "Long",
+        "Double",
+        "Float",
+        "Boolean",
+        "Byte",
+        "Short",
+        "Character",
+        "Number",
+        "Math",
+        "Comparable",
+        "Iterable",
+        "Enum",
+        "Record",
+        "Exception",
+        "RuntimeException",
+        "Error",
+        "Throwable",
+        "IllegalArgumentException",
+        "IllegalStateException",
+        "NullPointerException",
+        "IndexOutOfBoundsException",
+        "UnsupportedOperationException",
+        "ClassCastException",
+        "ArithmeticException",
+        "SecurityException",
+        "ClassNotFoundException",
+        "StringBuilder",
+        "StringBuffer",
+        "CharSequence",
+        "Override",
+        "Deprecated",
+        "SuppressWarnings",
+        "FunctionalInterface",
+        "AutoCloseable",
+        "Cloneable",
+        "Process",
+        "ProcessBuilder",
+        "Runtime",
+    ];
+    if java_lang_types.contains(&base) {
+        if class_part.contains('.') {
+            let rest = &class_part[base.len()..];
+            return format!("java.lang.{base}{rest}");
+        }
+        return format!("java.lang.{base}");
+    }
+
+    if !package.is_empty() {
+        return format!("{package}.{class_part}");
+    }
+
+    class_part.to_string()
+}
+
+fn javadoc_to_markdown(
+    doc: &str,
+    imports: &HashMap<String, String>,
+    package: &str,
+) -> (String, HashMap<String, String>) {
+    let (doc, type_refs) = process_inline_tags(doc, imports, package);
+
+    let mut body_lines = Vec::new();
     let mut params = Vec::new();
     let mut returns = None;
     let mut throws = Vec::new();
@@ -510,13 +756,13 @@ fn javadoc_to_markdown(doc: &str) -> String {
     for line in doc.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("@param ") {
-            params.push(clean_inline_tags(rest));
+            params.push(rest.to_string());
         } else if let Some(rest) = trimmed.strip_prefix("@return ") {
-            returns = Some(clean_inline_tags(rest));
+            returns = Some(rest.to_string());
         } else if let Some(rest) = trimmed.strip_prefix("@throws ") {
-            throws.push(clean_inline_tags(rest));
+            throws.push(rest.to_string());
         } else if let Some(rest) = trimmed.strip_prefix("@exception ") {
-            throws.push(clean_inline_tags(rest));
+            throws.push(rest.to_string());
         } else if trimmed.starts_with("@since")
             || trimmed.starts_with("@see")
             || trimmed.starts_with("@deprecated")
@@ -525,17 +771,21 @@ fn javadoc_to_markdown(doc: &str) -> String {
         {
             let tag = &trimmed[1..];
             if let Some((tag_name, rest)) = tag.split_once(' ') {
-                out.push_str(&format!("**@{tag_name}** {}\n", clean_inline_tags(rest)));
+                body_lines.push(format!("\n**@{tag_name}** {rest}"));
             }
         } else if !trimmed.starts_with('@') {
-            out.push_str(&clean_inline_tags(trimmed));
-            out.push('\n');
+            body_lines.push(line.to_string());
         }
     }
 
+    let body = body_lines.join("\n");
+    let mut out = convert_javadoc_html(&body);
+
     if !params.is_empty() {
-        out.push_str("\n**Parameters:**\n");
+        out.push_str("\n\n**Parameters:**\n");
         for p in &params {
+            let p = convert_javadoc_html(p);
+            let p = p.trim();
             if let Some((name, desc)) = p.split_once(' ') {
                 out.push_str(&format!("- `{name}` — {desc}\n"));
             } else {
@@ -544,11 +794,14 @@ fn javadoc_to_markdown(doc: &str) -> String {
         }
     }
     if let Some(ret) = &returns {
-        out.push_str(&format!("\n**Returns:** {ret}\n"));
+        let ret = convert_javadoc_html(ret);
+        out.push_str(&format!("\n**Returns:** {}\n", ret.trim()));
     }
     if !throws.is_empty() {
         out.push_str("\n**Throws:**\n");
         for t in &throws {
+            let t = convert_javadoc_html(t);
+            let t = t.trim();
             if let Some((name, desc)) = t.split_once(' ') {
                 out.push_str(&format!("- `{name}` — {desc}\n"));
             } else {
@@ -557,6 +810,72 @@ fn javadoc_to_markdown(doc: &str) -> String {
         }
     }
 
+    (out, type_refs)
+}
+
+fn convert_javadoc_html(s: &str) -> String {
+    let mut s = s.to_string();
+    s = s.replace("<p>", "\n\n");
+    s = s.replace("</p>", "");
+    s = s.replace("<em>", "*");
+    s = s.replace("</em>", "*");
+    s = s.replace("<i>", "*");
+    s = s.replace("</i>", "*");
+    s = s.replace("<b>", "**");
+    s = s.replace("</b>", "**");
+    s = s.replace("<strong>", "**");
+    s = s.replace("</strong>", "**");
+    s = s.replace("<code>", "`");
+    s = s.replace("</code>", "`");
+    s = s.replace("<tt>", "`");
+    s = s.replace("</tt>", "`");
+    s = s.replace("<ul>", "");
+    s = s.replace("</ul>", "");
+    s = s.replace("<ol>", "");
+    s = s.replace("</ol>", "");
+    s = s.replace("<li>", "\n- ");
+    s = s.replace("</li>", "");
+    s = s.replace("<pre>", "\n```\n");
+    s = s.replace("</pre>", "\n```\n");
+    s = s.replace("<blockquote>", "\n> ");
+    s = s.replace("</blockquote>", "\n");
+    s = s.replace("<br>", "\n");
+    s = s.replace("<br/>", "\n");
+    s = s.replace("<br />", "\n");
+    s = s.replace("<sup>", "^");
+    s = s.replace("</sup>", "");
+    s = s.replace("<sub>", "_");
+    s = s.replace("</sub>", "");
+    s = strip_remaining_html_tags(&s);
+    let mut out = String::with_capacity(s.len());
+    let mut blank_run = 0;
+    for line in s.lines() {
+        if line.trim().is_empty() {
+            blank_run += 1;
+            if blank_run <= 1 {
+                out.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn strip_remaining_html_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        if c == '<' {
+            in_tag = true;
+        } else if c == '>' && in_tag {
+            in_tag = false;
+        } else if !in_tag {
+            out.push(c);
+        }
+    }
     out
 }
 

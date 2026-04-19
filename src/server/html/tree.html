@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ijdocs — Java Documentation Browser</title>
+<style>
+:root {
+    --bg: #1e1e2e;
+    --bg-surface: #181825;
+    --bg-hover: #313244;
+    --bg-active: #45475a;
+    --text: #cdd6f4;
+    --text-dim: #a6adc8;
+    --text-muted: #6c7086;
+    --blue: #89b4fa;
+    --green: #a6e3a1;
+    --mauve: #cba6f7;
+    --peach: #fab387;
+    --yellow: #f9e2af;
+    --border: #313244;
+    --scrollbar: #45475a;
+    --scrollbar-hover: #585b70;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+
+#sidebar {
+    width: 340px;
+    min-width: 260px;
+    max-width: 50vw;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+#sidebar-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+#sidebar-header h1 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--blue);
+}
+#search-box {
+    width: 100%;
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+}
+#search-box:focus { border-color: var(--blue); }
+#search-box::placeholder { color: var(--text-muted); }
+#tree {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+.node {
+    padding: 3px 8px 3px 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    user-select: none;
+    border-radius: 0;
+}
+.node:hover { background: var(--bg-hover); }
+.node.active { background: var(--bg-active); }
+.node .icon {
+    width: 20px;
+    text-align: center;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.node .label { overflow: hidden; text-overflow: ellipsis; }
+.artifact > .label { color: var(--peach); font-weight: 600; }
+.package > .label { color: var(--green); }
+.class > .label { color: var(--blue); }
+.search-result { color: var(--blue); }
+.search-result .fqn { color: var(--text-dim); font-size: 11px; margin-left: 6px; cursor: pointer; }
+.search-result .fqn:hover { color: var(--green); text-decoration: underline; }
+.search-result .artifact-tag { color: var(--text-muted); font-size: 10px; margin-left: 6px; }
+.coord { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+.hidden { display: none; }
+
+#content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+#content-header {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 40px;
+}
+#breadcrumb {
+    font-size: 12px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+#breadcrumb span { color: var(--blue); cursor: pointer; }
+#breadcrumb span:hover { text-decoration: underline; }
+#btn-browser {
+    padding: 4px 10px;
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+#btn-browser:hover { background: var(--bg-active); }
+#doc-frame {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 24px;
+}
+#doc-frame.empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+#doc-frame pre {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    overflow-x: auto;
+    margin: 8px 0;
+    font-size: 12px;
+}
+#doc-frame code {
+    background: var(--bg-surface);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+#doc-frame pre code { background: none; padding: 0; }
+#doc-frame h1, #doc-frame h2, #doc-frame h3, #doc-frame h4 {
+    color: var(--mauve);
+    margin: 16px 0 8px;
+    font-size: 14px;
+}
+#doc-frame h1 { font-size: 18px; }
+#doc-frame h2 { font-size: 16px; }
+#doc-frame p { margin: 6px 0; line-height: 1.5; }
+#doc-frame ul, #doc-frame ol { margin: 6px 0 6px 20px; }
+#doc-frame li { margin: 3px 0; line-height: 1.5; }
+#doc-frame a { color: var(--blue); text-decoration: none; cursor: pointer; }
+#doc-frame a:hover { text-decoration: underline; }
+#doc-frame hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+#doc-frame .type-ref { color: var(--blue); cursor: pointer; }
+#doc-frame .type-ref:hover { text-decoration: underline; }
+
+#resize-handle {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 10;
+}
+#resize-handle:hover { background: var(--blue); opacity: 0.3; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div id="sidebar-header">
+        <h1>ijdocs</h1>
+        <input id="search-box" type="text" placeholder="Filter packages/classes...">
+    </div>
+    <div id="tree"></div>
+</div>
+<div id="resize-handle"></div>
+<div id="content">
+    <div id="content-header">
+        <div id="breadcrumb">Select a class from the tree</div>
+        <button id="btn-browser" class="hidden">Open in browser</button>
+    </div>
+    <div id="doc-frame" class="empty-state">Click a class to view its documentation</div>
+</div>
+
+<script>
+const BASE = window.location.origin;
+let treeData = [];
+let currentFqn = null;
+let currentData = null;
+
+function updateURL() {
+    const params = new URLSearchParams();
+    const q = document.getElementById('search-box').value.trim();
+    if (q) params.set('q', q);
+    if (currentFqn) params.set('class', currentFqn);
+    const str = params.toString();
+    history.replaceState(null, '', str ? '?' + str : window.location.pathname);
+}
+
+function loadFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q') || '';
+    const cls = params.get('class') || '';
+    if (q) {
+        document.getElementById('search-box').value = q;
+    }
+    return { q, cls };
+}
+
+async function fetchJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(r.statusText);
+    return r.json();
+}
+
+function el(tag, attrs, ...children) {
+    const e = document.createElement(tag);
+    if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+        if (k === 'class') e.className = v;
+        else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+        else e.setAttribute(k, v);
+    });
+    children.forEach(c => {
+        if (typeof c === 'string') e.appendChild(document.createTextNode(c));
+        else if (c) e.appendChild(c);
+    });
+    return e;
+}
+
+function renderTree(filter) {
+    const tree = document.getElementById('tree');
+    tree.innerHTML = '';
+    const fl = (filter || '').toLowerCase();
+    for (const art of treeData) {
+        const matchingPkgs = fl
+            ? art.packages.filter(p => p.toLowerCase().includes(fl))
+            : art.packages;
+        if (fl && matchingPkgs.length === 0 && !art.artifact.toLowerCase().includes(fl)) continue;
+        const artNode = el('div', { class: 'node artifact', onclick: () => toggleArt(art, artEl) });
+        const icon = el('span', { class: 'icon' }, art._expanded ? '▾' : '▸');
+        const label = el('span', { class: 'label' }, art.artifact);
+        artNode.style.paddingLeft = '8px';
+        artNode.appendChild(icon);
+        artNode.appendChild(label);
+        if (art.maven_coord) {
+            artNode.appendChild(el('span', { class: 'coord' }, art.maven_coord));
+        }
+        const artEl = el('div');
+        artEl.appendChild(artNode);
+        const pkgContainer = el('div', { class: art._expanded ? '' : 'hidden' });
+        const pkgsToShow = fl ? matchingPkgs : art.packages;
+        for (const pkg of pkgsToShow) {
+            const pkgState = art._pkgStates?.[pkg];
+            const pkgNode = el('div', { class: 'node package', onclick: (e) => { e.stopPropagation(); togglePkg(art, pkg, pkgEl); }});
+            pkgNode.style.paddingLeft = '28px';
+            pkgNode.appendChild(el('span', { class: 'icon' }, pkgState?._expanded ? '▾' : '▸'));
+            pkgNode.appendChild(el('span', { class: 'label' }, pkg));
+            const pkgEl = el('div');
+            pkgEl.appendChild(pkgNode);
+            const clsContainer = el('div', { class: (pkgState && pkgState._expanded) ? '' : 'hidden' });
+            if (pkgState && pkgState.classes) {
+                for (const cls of pkgState.classes) {
+                    if (fl && !cls.toLowerCase().includes(fl) && !pkg.toLowerCase().includes(fl)) continue;
+                    const fqn = pkg + '.' + cls;
+                    const clsNode = el('div', {
+                        class: 'node class' + (fqn === currentFqn ? ' active' : ''),
+                        onclick: (e) => { e.stopPropagation(); loadClass(fqn); }
+                    });
+                    clsNode.style.paddingLeft = '48px';
+                    clsNode.appendChild(el('span', { class: 'icon' }, '◆'));
+                    clsNode.appendChild(el('span', { class: 'label' }, cls));
+                    clsContainer.appendChild(clsNode);
+                }
+            }
+            pkgEl.appendChild(clsContainer);
+            pkgContainer.appendChild(pkgEl);
+        }
+        artEl.appendChild(pkgContainer);
+        tree.appendChild(artEl);
+        if (fl && !art._expanded) {
+            art._expanded = true;
+            pkgContainer.classList.remove('hidden');
+            artNode.querySelector('.icon').textContent = '▾';
+        }
+    }
+}
+
+function toggleArt(art, artEl) {
+    art._expanded = !art._expanded;
+    renderTree(document.getElementById('search-box').value);
+}
+
+async function togglePkg(art, pkg, pkgEl) {
+    art._pkgStates = art._pkgStates || {};
+    if (!art._pkgStates[pkg]) {
+        art._pkgStates[pkg] = { _expanded: false, classes: null };
+    }
+    const state = art._pkgStates[pkg];
+    if (state._expanded) {
+        state._expanded = false;
+        renderTree(document.getElementById('search-box').value);
+        return;
+    }
+    if (!state.classes) {
+        try {
+            state.classes = await fetchJSON(
+                `${BASE}/tree/classes?package=${encodeURIComponent(pkg)}&jar_idx=${art.jar_idx}`
+            );
+        } catch (e) {
+            state.classes = [];
+        }
+    }
+    state._expanded = true;
+    renderTree(document.getElementById('search-box').value);
+}
+
+function mdToHtml(md, typeRefs) {
+    let html = md;
+    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        return `<pre><code>${code.trim()}</code></pre>`;
+    });
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
+    html = html.replace(/^(?!<[huplo])((?!<\/?\w).+)$/gm, '<p>$1</p>');
+    html = html.replace(/<p><\/p>/g, '');
+    if (typeRefs) {
+        for (const [name, fqn] of Object.entries(typeRefs)) {
+            if (name.startsWith('@')) continue;
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(`(?<![\\w.])${escaped}(?!\\w)`, 'g');
+            html = html.replace(re, `<span class="type-ref" data-fqn="${fqn}">${name}</span>`);
+        }
+    }
+    return html;
+}
+
+async function loadClass(fqn) {
+    currentFqn = fqn;
+    const docFrame = document.getElementById('doc-frame');
+    docFrame.className = '';
+    docFrame.innerHTML = '<p style="color:var(--text-muted)">Loading...</p>';
+    try {
+        const data = await fetchJSON(`${BASE}/md/${fqn}`);
+        currentData = data;
+        const breadcrumb = document.getElementById('breadcrumb');
+        const parts = fqn.split('.');
+        breadcrumb.innerHTML = '';
+        let accum = '';
+        for (let i = 0; i < parts.length; i++) {
+            if (i > 0) { accum += '.'; breadcrumb.appendChild(document.createTextNode('.')); }
+            accum += parts[i];
+            const segFqn = accum;
+            const s = el('span', {
+                onclick: () => doSearch(segFqn),
+                title: 'Search: ' + segFqn,
+            }, parts[i]);
+            breadcrumb.appendChild(s);
+        }
+        const btnBrowser = document.getElementById('btn-browser');
+        if (data.has_html) {
+            btnBrowser.classList.remove('hidden');
+            btnBrowser.onclick = () => window.open(`${BASE}/html/${fqn}`, '_blank');
+        } else {
+            btnBrowser.classList.add('hidden');
+        }
+        docFrame.innerHTML = mdToHtml(data.markdown, data.type_refs);
+        docFrame.querySelectorAll('.type-ref').forEach(el => {
+            el.addEventListener('click', () => loadClass(el.dataset.fqn));
+        });
+    } catch (e) {
+        docFrame.innerHTML = `<p style="color:var(--peach)">Failed to load: ${e.message}</p>`;
+    }
+    updateURL();
+    if (searchMode && lastSearchHits) {
+        renderSearchResults(lastSearchHits, lastSearchQuery);
+    } else {
+        renderTree(document.getElementById('search-box').value);
+    }
+}
+
+let searchTimeout;
+let searchMode = false;
+let lastSearchHits = null;
+let lastSearchQuery = '';
+document.getElementById('search-box').addEventListener('input', (e) => {
+    clearTimeout(searchTimeout);
+    const q = e.target.value.trim();
+    if (q.length < 2) {
+        if (searchMode) { searchMode = false; renderTree(''); }
+        return;
+    }
+    searchTimeout = setTimeout(async () => {
+        searchMode = true;
+        updateURL();
+        try {
+            const hits = await fetchJSON(`${BASE}/search?q=${encodeURIComponent(q)}&limit=80`);
+            lastSearchHits = hits;
+            lastSearchQuery = q;
+            renderSearchResults(hits, q);
+        } catch (err) {
+            const tree = document.getElementById('tree');
+            tree.innerHTML = `<div style="padding:16px;color:var(--peach)">Search failed</div>`;
+        }
+    }, 200);
+});
+
+function doSearch(query) {
+    const box = document.getElementById('search-box');
+    box.value = query;
+    searchMode = true;
+    collapsedGroups.clear();
+    expandedPkgHits = {};
+    fetchJSON(`${BASE}/search?q=${encodeURIComponent(query)}&limit=80`).then(hits => {
+        lastSearchHits = hits;
+        lastSearchQuery = query;
+        renderSearchResults(hits, query);
+        updateURL();
+    });
+}
+
+let collapsedGroups = new Set();
+let expandedPkgHits = {};
+
+function renderSearchResults(hits, query) {
+    const tree = document.getElementById('tree');
+    tree.innerHTML = '';
+    if (hits.length === 0) {
+        tree.innerHTML = `<div style="padding:16px;color:var(--text-muted)">No results for "${query}"</div>`;
+        return;
+    }
+    const groups = new Map();
+    const packageHits = [];
+    for (const hit of hits) {
+        if (hit.kind === 'package') {
+            packageHits.push(hit);
+            continue;
+        }
+        const parts = hit.fqn.split('.');
+        const pkgName = parts.slice(0, -1).join('.');
+        const key = pkgName + '::' + hit.artifact;
+        if (!groups.has(key)) {
+            groups.set(key, { pkg: pkgName, artifact: hit.artifact, jar_idx: hit.jar_idx, classes: [] });
+        }
+        groups.get(key).classes.push(hit);
+    }
+
+    // Render package hits that don't already have a class group
+    const groupedPkgs = new Set([...groups.values()].map(g => g.pkg));
+    for (const hit of packageHits) {
+        if (groupedPkgs.has(hit.fqn)) continue;
+        const pkgKey = hit.fqn + '::' + hit.artifact;
+        const isExpanded = !!expandedPkgHits[pkgKey];
+        const node = el('div', {
+            class: 'node package',
+            onclick: () => togglePkgHit(hit, pkgKey)
+        });
+        node.style.paddingLeft = '8px';
+        node.appendChild(el('span', { class: 'icon' }, isExpanded ? '▾' : '▸'));
+        node.appendChild(el('span', { class: 'label' }, hit.fqn));
+        node.appendChild(el('span', { class: 'artifact-tag' }, hit.artifact));
+        tree.appendChild(node);
+        if (isExpanded && expandedPkgHits[pkgKey].classes) {
+            for (const cls of expandedPkgHits[pkgKey].classes) {
+                const fqn = hit.fqn + '.' + cls;
+                const clsNode = el('div', {
+                    class: 'node search-result' + (fqn === currentFqn ? ' active' : ''),
+                    onclick: () => loadClass(fqn)
+                });
+                clsNode.style.paddingLeft = '28px';
+                clsNode.appendChild(el('span', { class: 'icon' }, '◆'));
+                clsNode.appendChild(el('span', { class: 'label' }, cls));
+                tree.appendChild(clsNode);
+            }
+        }
+    }
+
+    for (const [key, group] of groups) {
+        const isSinglePkg = groups.size === 1 && packageHits.length === 0;
+        const isCollapsed = collapsedGroups.has(key);
+        const pkgNode = el('div', {
+            class: 'node package',
+            onclick: () => { isCollapsed ? collapsedGroups.delete(key) : collapsedGroups.add(key); renderSearchResults(lastSearchHits, lastSearchQuery); }
+        });
+        pkgNode.style.paddingLeft = '8px';
+        pkgNode.appendChild(el('span', { class: 'icon' }, isCollapsed ? '▸' : '▾'));
+        pkgNode.appendChild(el('span', { class: 'label' }, group.pkg));
+        pkgNode.appendChild(el('span', { class: 'artifact-tag' }, group.artifact));
+        tree.appendChild(pkgNode);
+
+        if (!isCollapsed) {
+            for (const hit of group.classes) {
+                const shortName = hit.fqn.split('.').pop();
+                const clsNode = el('div', {
+                    class: 'node search-result' + (hit.fqn === currentFqn ? ' active' : ''),
+                    onclick: () => loadClass(hit.fqn)
+                });
+                clsNode.style.paddingLeft = '28px';
+                clsNode.appendChild(el('span', { class: 'icon' }, '◆'));
+                clsNode.appendChild(el('span', { class: 'label' }, shortName));
+                tree.appendChild(clsNode);
+            }
+        }
+
+        // If all results are in one package, try loading full class list
+        if (isSinglePkg && group.classes.length < 80) {
+            loadPackageClasses(group.pkg, group.jar_idx, group.classes.map(h => h.fqn));
+        }
+    }
+}
+
+async function togglePkgHit(hit, pkgKey) {
+    if (expandedPkgHits[pkgKey]) {
+        delete expandedPkgHits[pkgKey];
+        renderSearchResults(lastSearchHits, lastSearchQuery);
+        return;
+    }
+    expandedPkgHits[pkgKey] = { classes: null };
+    try {
+        const classes = await fetchJSON(
+            `${BASE}/tree/classes?package=${encodeURIComponent(hit.fqn)}&jar_idx=${hit.jar_idx}`
+        );
+        expandedPkgHits[pkgKey].classes = classes;
+    } catch (e) {
+        expandedPkgHits[pkgKey].classes = [];
+    }
+    renderSearchResults(lastSearchHits, lastSearchQuery);
+}
+
+async function loadPackageClasses(pkg, jarIdx, alreadyShown) {
+    try {
+        const classes = await fetchJSON(
+            `${BASE}/tree/classes?package=${encodeURIComponent(pkg)}&jar_idx=${jarIdx}`
+        );
+        const shownSet = new Set(alreadyShown);
+        const extra = classes.filter(c => !shownSet.has(pkg + '.' + c));
+        if (extra.length === 0) return;
+
+        const tree = document.getElementById('tree');
+        // Find the last node in the tree to append after
+        for (const cls of extra) {
+            const fqn = pkg + '.' + cls;
+            const clsNode = el('div', {
+                class: 'node search-result' + (fqn === currentFqn ? ' active' : ''),
+                onclick: () => loadClass(fqn)
+            });
+            clsNode.style.paddingLeft = '28px';
+            clsNode.appendChild(el('span', { class: 'icon' }, '◆'));
+            clsNode.appendChild(el('span', { class: 'label' }, cls));
+            clsNode.style.opacity = '0.6';
+            tree.appendChild(clsNode);
+        }
+
+        // Update cached hits for stability
+        for (const cls of extra) {
+            const fqn = pkg + '.' + cls;
+            lastSearchHits.push({ kind: 'class', fqn, artifact: '', jar_idx: jarIdx });
+        }
+    } catch (e) { /* ignore */ }
+}
+
+document.getElementById('search-box').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        e.target.value = '';
+        searchMode = false;
+        lastSearchHits = null;
+        lastSearchQuery = '';
+        renderTree('');
+        updateURL();
+    }
+});
+
+(async () => {
+    const urlState = loadFromURL();
+    try {
+        treeData = await fetchJSON(`${BASE}/tree`);
+    } catch (e) {
+        document.getElementById('tree').innerHTML =
+            `<div style="padding:16px;color:var(--peach)">Failed to load tree: ${e.message}</div>`;
+        return;
+    }
+    if (urlState.q) {
+        searchMode = true;
+        try {
+            const hits = await fetchJSON(`${BASE}/search?q=${encodeURIComponent(urlState.q)}&limit=80`);
+            lastSearchHits = hits;
+            lastSearchQuery = urlState.q;
+            renderSearchResults(hits, urlState.q);
+        } catch (e) { renderTree(''); }
+    } else {
+        renderTree('');
+    }
+    if (urlState.cls) {
+        loadClass(urlState.cls);
+    }
+})();
+
+const handle = document.getElementById('resize-handle');
+const sidebar = document.getElementById('sidebar');
+let resizing = false;
+handle.style.left = sidebar.offsetWidth - 2 + 'px';
+handle.addEventListener('mousedown', () => { resizing = true; document.body.style.cursor = 'col-resize'; });
+document.addEventListener('mousemove', (e) => {
+    if (!resizing) return;
+    const w = Math.max(200, Math.min(e.clientX, window.innerWidth * 0.5));
+    sidebar.style.width = w + 'px';
+    handle.style.left = w - 2 + 'px';
+});
+document.addEventListener('mouseup', () => { resizing = false; document.body.style.cursor = ''; });
+</script>
+</body>
+</html>
+

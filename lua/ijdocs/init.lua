@@ -16,11 +16,15 @@ local config = {
 
 local server_started = false
 
+local function get_plugin_root()
+	return vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
+end
+
 local function find_server_bin()
 	if config.server_bin then
 		return config.server_bin
 	end
-	local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h:h")
+	local plugin_root = get_plugin_root()
 	local release = plugin_root .. "/target/release/ijdocs-server"
 	if vim.fn.executable(release) == 1 then
 		return release
@@ -30,6 +34,28 @@ local function find_server_bin()
 		return debug_bin
 	end
 	return nil
+end
+
+local function ensure_built(callback)
+	if find_server_bin() then
+		return callback()
+	end
+	if vim.fn.executable("cargo") ~= 1 then
+		vim.notify("ijdocs: cargo not found, cannot build server binary", vim.log.levels.ERROR)
+		return
+	end
+	local plugin_root = get_plugin_root()
+	vim.notify("ijdocs: building server binary (cargo build --release)...", vim.log.levels.INFO)
+	vim.system({ "cargo", "build", "--release" }, { cwd = plugin_root, text = true }, function(obj)
+		vim.schedule(function()
+			if obj.code ~= 0 then
+				vim.notify("ijdocs: build failed:\n" .. (obj.stderr or ""), vim.log.levels.ERROR)
+				return
+			end
+			vim.notify("ijdocs: build complete", vim.log.levels.INFO)
+			callback()
+		end)
+	end)
 end
 
 local function ensure_server()
@@ -55,7 +81,7 @@ end
 
 function M.setup(opts)
 	config = vim.tbl_deep_extend("force", config, opts or {})
-	ensure_server()
+	ensure_built(ensure_server)
 end
 
 function M.config()
@@ -332,12 +358,45 @@ local function open_float(data)
 	ijdocs_current_data = data
 
 	local function navigate_type()
+		local line = vim.api.nvim_get_current_line()
+		local col = vim.api.nvim_win_get_cursor(0)[2] + 1
+		local s, e = col, col
+		while s > 1 and line:sub(s - 1, s - 1):match("[%w_%.]") do
+			s = s - 1
+		end
+		while e < #line and line:sub(e + 1, e + 1):match("[%w_%.]") do
+			e = e + 1
+		end
+		local compound = line:sub(s, e):gsub("^%.+", ""):gsub("%.+$", "")
 		local word = vim.fn.expand("<cword>")
 		local refs = ijdocs_current_refs
 		local cur_line = vim.api.nvim_win_get_cursor(0)[1]
-		local target_fqn = refs[word] or refs["@" .. word]
+		local target_fqn = refs[compound] or refs[word] or refs["@" .. word]
+		if not target_fqn then
+			local suffix = "%." .. word:gsub("([%(%)%.%+%-%*%?%[%]%^%$%%])", "%%%1") .. "$"
+			for k, v in pairs(refs) do
+				if k:match(suffix) then
+					target_fqn = v
+					break
+				end
+			end
+		end
 		if not target_fqn and cur_line == 1 and ijdocs_current_data then
 			target_fqn = ijdocs_current_data.fqn
+		end
+		if not target_fqn and ijdocs_current_data and word:match("^%l") then
+			local current_fqn = ijdocs_current_data.fqn
+			local cursor_pos = vim.api.nvim_win_get_cursor(0)
+			table.insert(nav_history, { data = ijdocs_current_data, cursor = cursor_pos })
+			fetch_fqn_docs(current_fqn, word, nil, function(new_data, err)
+				if not new_data then
+					table.remove(nav_history)
+					vim.notify("ijdocs: " .. err, vim.log.levels.WARN)
+					return
+				end
+				open_float(new_data)
+			end)
+			return
 		end
 		if not target_fqn then
 			local navigable = {}
@@ -357,7 +416,8 @@ local function open_float(data)
 			end
 			return
 		end
-		table.insert(nav_history, ijdocs_current_data)
+		local cursor_pos = vim.api.nvim_win_get_cursor(0)
+		table.insert(nav_history, { data = ijdocs_current_data, cursor = cursor_pos })
 		fetch_fqn_docs(target_fqn, nil, nil, function(new_data, err)
 			if not new_data then
 				table.remove(nav_history)
@@ -384,8 +444,13 @@ local function open_float(data)
 			vim.notify("ijdocs: no history", vim.log.levels.INFO)
 			return
 		end
-		local prev = table.remove(nav_history)
-		open_float(prev)
+		local entry = table.remove(nav_history)
+		open_float(entry.data)
+		if entry.cursor and ijdocs_float_win and vim.api.nvim_win_is_valid(ijdocs_float_win) then
+			local line_count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(ijdocs_float_win))
+			local row = math.min(entry.cursor[1], line_count)
+			pcall(vim.api.nvim_win_set_cursor, ijdocs_float_win, { row, entry.cursor[2] })
+		end
 	end
 
 	local function browse_type()
@@ -486,17 +551,36 @@ function M.hover()
 		end
 		local function show(data, herr)
 			if not data then
-				vim.notify("ijdocs: " .. herr, vim.log.levels.ERROR)
+				vim.lsp.buf.hover()
 				return
 			end
 			open_float(data)
 		end
+		local member = word
+		local class_name = sym.fqn:match("%.([^%.]+)$") or sym.fqn
+		if member == class_name then
+			member = nil
+		end
 		if sym.source == "jar" then
-			fetch_fqn_docs(sym.fqn, word, sym.jar_hint, show)
+			fetch_fqn_docs(sym.fqn, member, sym.jar_hint, show)
 		else
-			fetch_source_docs(sym.file_path, word, sym.fqn, show)
+			fetch_source_docs(sym.file_path, member, sym.fqn, show)
 		end
 	end)
+end
+
+function M.show_float(data)
+	open_float(data)
+end
+
+function M.tree()
+	require("ijdocs.tree").toggle()
+end
+
+function M.tree_browser()
+	local url = config.url .. "/tree/html"
+	local cmd = config.browser_cmd or (vim.fn.has("mac") == 1 and "open" or "xdg-open")
+	vim.system({ cmd, url }, { detach = true })
 end
 
 function M.open_browser()

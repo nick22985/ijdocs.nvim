@@ -1,6 +1,7 @@
 mod bytecode;
 mod extract;
 mod index;
+mod jdk;
 mod server;
 
 use clap::Parser;
@@ -44,10 +45,28 @@ async fn main() -> anyhow::Result<()> {
     roots.retain(|p| p.exists());
 
     tracing::info!(?roots, "discovering javadoc jars");
-    let idx = index::Index::build(&roots)?;
-    tracing::info!(jars = idx.jar_count(), classes = idx.class_count(), "index built");
+    let mut idx = index::Index::build(&roots)?;
+    tracing::info!(jars = idx.jar_count(), packages = idx.class_count(), classes = idx.class_entries().len(), "jar index built");
 
-    let state = Arc::new(server::AppState { index: idx });
+    let jdk_src = jdk::JdkSrc::discover();
+    if let Some(jdk) = &jdk_src {
+        let jdk_classes: Vec<index::ClassEntry> = jdk.all_classes().iter().map(|(pkg, cls)| {
+            index::ClassEntry {
+                class_name: cls.clone(),
+                fqn: format!("{pkg}.{cls}"),
+                jar_idx: index::JDK_JAR_IDX,
+            }
+        }).collect();
+        tracing::info!(jdk_classes = jdk_classes.len(), "JDK src.zip found");
+        idx.add_classes(jdk_classes);
+    } else {
+        tracing::warn!("no JDK src.zip found (set JAVA_HOME to enable JDK docs)");
+    }
+
+    let state = Arc::new(server::AppState {
+        index: idx,
+        jdk_src,
+    });
     let app = server::router(state);
 
     tracing::info!(listen = %args.listen, "starting server");
