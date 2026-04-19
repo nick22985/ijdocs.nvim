@@ -22,6 +22,24 @@ pub struct MdResult {
     pub type_refs: HashMap<String, String>,
 }
 
+fn extract_package(fqn: &str) -> &str {
+    let mut last_pkg_end = 0;
+    for (i, part) in fqn.split('.').enumerate() {
+        if part.chars().next().map_or(false, |c| c.is_uppercase()) {
+            break;
+        }
+        if i > 0 {
+            last_pkg_end += 1;
+        }
+        last_pkg_end += part.len();
+    }
+    if last_pkg_end == 0 || last_pkg_end >= fqn.len() {
+        fqn.rsplit_once('.').map_or(fqn, |(pkg, _)| pkg)
+    } else {
+        &fqn[..last_pkg_end]
+    }
+}
+
 pub fn html_to_markdown(
     html_bytes: &[u8],
     member: Option<&str>,
@@ -40,7 +58,7 @@ pub fn html_to_markdown(
         extract_class_overview(&doc)
     };
 
-    let base_pkg = fqn.and_then(|f| f.rsplit_once('.')).map(|(pkg, _)| pkg);
+    let base_pkg = fqn.map(|f| extract_package(f));
     let mut type_refs = extract_type_refs(&chunk_html, base_pkg);
     let stripped = strip_nav_and_clutter(&chunk_html);
     let md = html2md::parse_html(&stripped);
